@@ -6,6 +6,8 @@ import BackgroundDesign from '@/components/BackgroundDesign';
 import NexusAICopilot from '@/components/NexusAICopilot';
 import CursorSpotlight from '@/components/CursorSpotlight';
 import BugReportModal from '@/components/BugReportModal';
+import AppIntroSplash from '@/components/AppIntroSplash';
+import TopProgressBar from '@/components/TopProgressBar';
 
 const jakarta = Plus_Jakarta_Sans({ 
   subsets: ['latin'],
@@ -26,6 +28,12 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark scroll-smooth">
       <body className={`${jakarta.className} antialiased selection:bg-orange-500/30 selection:text-orange-300 relative transition-colors duration-300 min-h-screen`}>
+        {/* Futuristic Laser Top Route Transition Progress Bar */}
+        <TopProgressBar />
+
+        {/* Cyberpunk First-Session Loading Intro Splash */}
+        <AppIntroSplash />
+
         {/* Dynamic Multi-Layer Background Graphic Architecture */}
         <BackgroundDesign />
         
