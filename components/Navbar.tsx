@@ -241,11 +241,11 @@ export default function Navbar() {
             </Link>
 
             <Link
-              href="/profile"
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-zinc-600 dark:text-zinc-300 hover:text-orange-600 dark:hover:text-white hover:bg-white dark:hover:bg-white/10 transition"
+              href="/pitch"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 border border-amber-500/20 transition"
             >
-              <User className="w-3.5 h-3.5 text-purple-500" />
-              <span>Profile</span>
+              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+              <span>Pitch Deck</span>
             </Link>
           </nav>
 
@@ -388,6 +388,15 @@ export default function Navbar() {
               >
                 <User className="w-4 h-4 text-purple-500" />
                 <span>My Profile</span>
+              </Link>
+
+              <Link
+                href="/pitch"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="col-span-2 flex items-center justify-center gap-2 p-3 rounded-2xl bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/30 text-xs font-bold text-amber-500 dark:text-amber-400"
+              >
+                <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
+                <span>Launch Pitch Deck (PPT)</span>
               </Link>
             </div>
 
