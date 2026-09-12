@@ -727,15 +727,15 @@ export default function PitchDeckPage() {
       )}
 
       {/* Slide Navigation Footer */}
-      <footer className="relative z-20 border-t border-slate-800/80 bg-slate-900/60 backdrop-blur-md px-6 py-3 flex items-center justify-between">
+      <footer className="relative z-30 border-t border-slate-800/80 bg-slate-900/80 backdrop-blur-md px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
         {/* Dot Indicators */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 order-2 sm:order-1">
           {slidesData.map((s) => (
             <button
               key={s.id}
               onClick={() => setCurrentSlide(s.id)}
               className={`h-2.5 rounded-full transition-all duration-200 ${
-                s.id === currentSlide ? 'bg-amber-400 w-6' : 'bg-slate-700 hover:bg-slate-500 w-2.5'
+                s.id === currentSlide ? 'bg-amber-400 w-7 shadow-sm shadow-amber-400/50' : 'bg-slate-700 hover:bg-slate-500 w-2.5'
               }`}
               title={`Go to Slide ${s.id}`}
             />
@@ -743,31 +743,37 @@ export default function PitchDeckPage() {
         </div>
 
         {/* Navigation Buttons */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 order-1 sm:order-2 w-full sm:w-auto justify-between sm:justify-end">
           <button
             onClick={prevSlide}
             disabled={currentSlide === 1}
-            className={`px-4 py-2 rounded-xl border text-xs font-semibold transition flex items-center gap-1 ${
+            className={`px-5 py-2.5 rounded-xl border text-xs font-bold transition flex items-center gap-2 ${
               currentSlide === 1
                 ? 'border-slate-800 bg-slate-900/40 text-slate-600 cursor-not-allowed'
-                : 'border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-200'
+                : 'border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white shadow-sm'
             }`}
           >
-            <ArrowLeft className="w-3.5 h-3.5" /> Previous
+            <ArrowLeft className="w-4 h-4" />
+            <span>Previous</span>
+            <kbd className="hidden md:inline px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px] text-slate-400 font-mono">←</kbd>
           </button>
+          
           <button
             onClick={nextSlide}
             disabled={currentSlide === totalSlides}
-            className={`px-5 py-2 rounded-xl text-xs font-bold transition shadow-md shadow-amber-500/20 flex items-center gap-1 ${
+            className={`px-6 py-2.5 rounded-xl text-xs font-bold transition shadow-lg flex items-center gap-2 ${
               currentSlide === totalSlides
                 ? 'border border-slate-800 bg-slate-900/40 text-slate-600 cursor-not-allowed'
-                : 'bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950'
+                : 'bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-400 text-slate-950 shadow-amber-500/20 hover:scale-105 active:scale-95'
             }`}
           >
-            Next <ArrowRight className="w-3.5 h-3.5" />
+            <span>Next</span>
+            <kbd className="hidden md:inline px-1.5 py-0.5 rounded bg-amber-600/30 border border-amber-950/20 text-[10px] text-slate-950 font-mono font-black">→</kbd>
+            <ArrowRight className="w-4 h-4" />
           </button>
         </div>
       </footer>
     </div>
   );
 }
+

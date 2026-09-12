@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { usePathname } from 'next/navigation';
 import { useUserCredits } from '@/hooks/useUserCredits';
 import {
   Sparkles,
@@ -113,8 +114,14 @@ Imagine ordering food at the **LPU Uni-Mall Food Court**:
 };
 
 export default function NexusAICopilot() {
+  const pathname = usePathname();
   const { credits, setCredits } = useUserCredits();
   const [isOpen, setIsOpen] = useState(false);
+
+  // If on pitch deck presentation page, hide floating widget to keep slides clear
+  if (pathname === '/pitch') {
+    return null;
+  }
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
