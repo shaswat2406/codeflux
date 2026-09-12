@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
@@ -62,6 +62,83 @@ const ICE_SERVERS = {
   ],
 };
 
+// Remote Video Tile Component (Handles WebRTC stream or Realtime Frame fallback)
+function RemotePeerCard({
+  participant,
+  stream,
+  fallbackFrame,
+}: {
+  participant: Participant;
+  stream?: MediaStream;
+  fallbackFrame?: string;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      videoRef.current
+        .play()
+        .then(() => setIsPlaying(true))
+        .catch((e) => {
+          console.log('Autoplay handled', e);
+        });
+    }
+  }, [stream]);
+
+  const showVideo = stream && isPlaying;
+  const showFallback = !showVideo && fallbackFrame;
+
+  return (
+    <div className="relative rounded-3xl bg-zinc-900/60 border border-white/10 overflow-hidden flex items-center justify-center min-h-[260px] shadow-2xl animate-in fade-in zoom-in-95 duration-300">
+      {/* 1. Live WebRTC Video Stream */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className={`w-full h-full object-cover ${!showVideo ? 'hidden' : ''}`}
+      />
+
+      {/* 2. Realtime High-Speed Canvas Frame Stream (NAT/Firewall Bypass) */}
+      {showFallback && (
+        <img
+          src={fallbackFrame}
+          alt={participant.name}
+          className="w-full h-full object-cover animate-in fade-in duration-150"
+        />
+      )}
+
+      {/* 3. Bot Avatar when camera is off */}
+      {!showVideo && !showFallback && (
+        <div className="flex flex-col items-center gap-3">
+          <img
+            src={participant.avatar}
+            alt={participant.name}
+            className="w-20 h-20 rounded-full bg-zinc-800 border-2 border-orange-500/30 shadow-lg"
+          />
+          <div className="text-center">
+            <p className="text-sm font-bold text-white">{participant.name}</p>
+            <p className="text-xs text-emerald-400 flex items-center justify-center gap-1.5 mt-0.5 font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Connected & Studying
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Participant Name Tag */}
+      <div className="absolute bottom-3 left-3 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-bold border border-white/10 flex items-center gap-2">
+        <span>{participant.name}</span>
+        {(showVideo || showFallback) && (
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Live Video Active" />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function VideoStudyRoomPage() {
   const params = useParams();
   const router = useRouter();
@@ -80,6 +157,7 @@ export default function VideoStudyRoomPage() {
 
   // Media Streams & Hardware Controls
   const localVideoRef = useRef<HTMLVideoElement>(null);
+  const hiddenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const [isMicOn, setIsMicOn] = useState(true);
@@ -90,6 +168,7 @@ export default function VideoStudyRoomPage() {
   // WebRTC Peer Connections & Remote Streams Map
   const peerConnections = useRef<{ [peerId: string]: RTCPeerConnection }>({});
   const [remoteStreams, setRemoteStreams] = useState<{ [peerId: string]: MediaStream }>({});
+  const [remoteFrames, setRemoteFrames] = useState<{ [peerId: string]: string }>({});
 
   // Super Sidebar State: 'none' | 'chat' | 'whiteboard' | 'hands'
   const [activeSidebar, setActiveSidebar] = useState<'chat' | 'whiteboard' | 'hands' | 'none'>('chat');
@@ -126,18 +205,16 @@ export default function VideoStudyRoomPage() {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     peerConnections.current[peerId] = pc;
 
-    // Add local tracks if available
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         try {
           pc.addTrack(track, localStreamRef.current!);
         } catch (e) {
-          console.warn('Track already added or failed', e);
+          console.warn('Track error', e);
         }
       });
     }
 
-    // ICE Candidate handler
     pc.onicecandidate = (event) => {
       if (event.candidate && channel) {
         channel.send({
@@ -152,7 +229,6 @@ export default function VideoStudyRoomPage() {
       }
     };
 
-    // Remote Track Handler (When incoming video/audio arrives from other device)
     pc.ontrack = (event) => {
       if (event.streams && event.streams[0]) {
         const incomingStream = event.streams[0];
@@ -181,7 +257,7 @@ export default function VideoStudyRoomPage() {
   const startMedia = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 } },
+        video: { width: { ideal: 480 }, height: { ideal: 360 }, facingMode: 'user' },
         audio: true,
       });
       setLocalStream(stream);
@@ -193,7 +269,7 @@ export default function VideoStudyRoomPage() {
         localVideoRef.current.srcObject = stream;
       }
 
-      // Add newly acquired tracks to all existing peer connections
+      // Add tracks to all open peer connections
       Object.values(peerConnections.current).forEach((pc) => {
         stream.getTracks().forEach((track) => {
           try {
@@ -204,7 +280,7 @@ export default function VideoStudyRoomPage() {
         });
       });
     } catch (err) {
-      console.warn('Camera/Mic permission denied or not found:', err);
+      console.warn('Camera/Mic permission denied or unavailable:', err);
     }
   };
 
@@ -218,7 +294,43 @@ export default function VideoStudyRoomPage() {
     };
   }, []);
 
-  // 2. Realtime Multi-User Presence & Broadcast Channel with WebRTC Signaling
+  // 2. High-Speed Frame Streamer (Fallback if WebRTC STUN is blocked by symmetric mobile carrier NAT)
+  useEffect(() => {
+    if (!isVideoOn) return;
+
+    if (!hiddenCanvasRef.current) {
+      hiddenCanvasRef.current = document.createElement('canvas');
+      hiddenCanvasRef.current.width = 240;
+      hiddenCanvasRef.current.height = 180;
+    }
+
+    const interval = setInterval(() => {
+      const video = localVideoRef.current;
+      const canvas = hiddenCanvasRef.current;
+      if (!video || !canvas || !channelRef.current) return;
+
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const frameData = canvas.toDataURL('image/jpeg', 0.35);
+
+          channelRef.current.send({
+            type: 'broadcast',
+            event: 'video_frame',
+            payload: {
+              senderId: currentSessionId,
+              frame: frameData,
+            },
+          });
+        }
+      }
+    }, 200); // 5 frames per second lightweight frame broadcast
+
+    return () => clearInterval(interval);
+  }, [isVideoOn, currentSessionId]);
+
+  // 3. Realtime Multi-User Presence & Broadcast Channel with WebRTC Signaling
   useEffect(() => {
     let activeChannel: any;
 
@@ -249,7 +361,7 @@ export default function VideoStudyRoomPage() {
         config: { presence: { key: currentId } },
       });
 
-      // PRESENCE SYNC & Auto-Connect WebRTC Peers
+      // PRESENCE SYNC
       activeChannel.on('presence', { event: 'sync' }, async () => {
         const state = activeChannel.presenceState();
         const list: Participant[] = [];
@@ -265,11 +377,10 @@ export default function VideoStudyRoomPage() {
               hasAudio: entry.hasAudio ?? true,
             });
 
-            // If a peer is found and we haven't connected yet, the newer peer initiates offer
+            // Connect WebRTC peer
             if (key !== currentId && !peerConnections.current[key]) {
               const pc = createPeerConnection(key, currentId, activeChannel);
 
-              // If our currentId is lexicographically greater, initiate the offer to avoid collision
               if (currentId > key) {
                 try {
                   const offer = await pc.createOffer();
@@ -293,7 +404,7 @@ export default function VideoStudyRoomPage() {
         setParticipants(list);
       });
 
-      // WEBRTC SIGNALING: Handle Incoming Offer
+      // WEBRTC SIGNALING: Offer
       activeChannel.on('broadcast', { event: 'webrtc_offer' }, async ({ payload }: any) => {
         if (payload.targetId !== currentId) return;
         try {
@@ -316,7 +427,7 @@ export default function VideoStudyRoomPage() {
         }
       });
 
-      // WEBRTC SIGNALING: Handle Incoming Answer
+      // WEBRTC SIGNALING: Answer
       activeChannel.on('broadcast', { event: 'webrtc_answer' }, async ({ payload }: any) => {
         if (payload.targetId !== currentId) return;
         try {
@@ -329,7 +440,7 @@ export default function VideoStudyRoomPage() {
         }
       });
 
-      // WEBRTC SIGNALING: Handle ICE Candidate
+      // WEBRTC SIGNALING: ICE Candidate
       activeChannel.on('broadcast', { event: 'webrtc_ice' }, async ({ payload }: any) => {
         if (payload.targetId !== currentId) return;
         try {
@@ -339,6 +450,16 @@ export default function VideoStudyRoomPage() {
           }
         } catch (err) {
           console.warn('Error adding ICE candidate:', err);
+        }
+      });
+
+      // INCOMING FALLBACK VIDEO FRAME (Guarantees camera visibility across all mobile networks)
+      activeChannel.on('broadcast', { event: 'video_frame' }, ({ payload }: any) => {
+        if (payload.senderId && payload.senderId !== currentId && payload.frame) {
+          setRemoteFrames((prev) => ({
+            ...prev,
+            [payload.senderId]: payload.frame,
+          }));
         }
       });
 
@@ -449,7 +570,6 @@ export default function VideoStudyRoomPage() {
           localVideoRef.current.srcObject = screenStream;
         }
 
-        // Replace video track on all peer connections
         const screenTrack = screenStream.getVideoTracks()[0];
         Object.values(peerConnections.current).forEach((pc) => {
           const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
@@ -490,7 +610,7 @@ export default function VideoStudyRoomPage() {
     setNewMessage('');
   };
 
-  // Whiteboard Canvas Handlers
+  // Whiteboard Handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -631,7 +751,7 @@ export default function VideoStudyRoomPage() {
               <span>•</span>
               <span className="text-emerald-400 flex items-center gap-1">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                Live WebRTC Mesh Active
+                Live Video & Sprints
               </span>
             </p>
           </div>
@@ -783,52 +903,15 @@ export default function VideoStudyRoomPage() {
             </div>
           </div>
 
-          {/* Remote Connected Peers (Real WebRTC Live Camera Stream) */}
-          {participants.filter((p) => p.id !== currentSessionId).map((p) => {
-            const hasRemoteVideo = !!remoteStreams[p.id];
-
-            return (
-              <div
-                key={p.id}
-                className="relative rounded-3xl bg-zinc-900/40 border border-white/10 overflow-hidden flex items-center justify-center min-h-[260px] shadow-2xl animate-in fade-in zoom-in-95 duration-300"
-              >
-                {/* Live Remote Video Stream */}
-                <video
-                  ref={(el) => {
-                    if (el && remoteStreams[p.id]) {
-                      el.srcObject = remoteStreams[p.id];
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  className={`w-full h-full object-cover ${!hasRemoteVideo ? 'hidden' : ''}`}
-                />
-
-                {/* Fallback Avatar when camera is connecting or off */}
-                {!hasRemoteVideo && (
-                  <div className="flex flex-col items-center gap-3">
-                    <img
-                      src={p.avatar}
-                      alt={p.name}
-                      className="w-20 h-20 rounded-full bg-zinc-800 border-2 border-orange-500/30 shadow-lg"
-                    />
-                    <div className="text-center">
-                      <p className="text-sm font-bold text-white">{p.name}</p>
-                      <p className="text-xs text-emerald-400 flex items-center justify-center gap-1.5 mt-0.5 font-medium">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        Studying on Call
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="absolute bottom-3 left-3 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-bold border border-white/10 flex items-center gap-2">
-                  <span>{p.name}</span>
-                  {hasRemoteVideo && <span className="w-2 h-2 rounded-full bg-emerald-400" title="Live Video" />}
-                </div>
-              </div>
-            );
-          })}
+          {/* Remote Connected Peers (Real Live Video Feed with Fallback) */}
+          {participants.filter((p) => p.id !== currentSessionId).map((p) => (
+            <RemotePeerCard
+              key={p.id}
+              participant={p}
+              stream={remoteStreams[p.id]}
+              fallbackFrame={remoteFrames[p.id]}
+            />
+          ))}
 
         </div>
 
