@@ -20,7 +20,8 @@ import {
   Maximize2,
   Minimize2,
   HelpCircle,
-  ExternalLink
+  ExternalLink,
+  Download
 } from 'lucide-react';
 
 interface Slide {
@@ -186,6 +187,15 @@ export default function PitchDeckPage() {
           <span className="text-xs font-mono text-slate-400 mr-2">
             Slide {currentSlide} of {totalSlides}
           </span>
+          <a
+            href="/LPU_StudyNexus_PitchDeck.pptx"
+            download="LPU_StudyNexus_PitchDeck.pptx"
+            className="px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold text-xs transition flex items-center gap-1.5 shadow-sm"
+            title="Download PowerPoint File (.pptx)"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Download .PPTX</span>
+          </a>
           <button
             onClick={() => setShowNotes(!showNotes)}
             className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition flex items-center gap-1.5 ${
