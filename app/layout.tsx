@@ -5,6 +5,7 @@ import Navbar from '@/components/Navbar';
 import BackgroundDesign from '@/components/BackgroundDesign';
 import NexusAICopilot from '@/components/NexusAICopilot';
 import CursorSpotlight from '@/components/CursorSpotlight';
+import BugReportModal from '@/components/BugReportModal';
 
 const jakarta = Plus_Jakarta_Sans({ 
   subsets: ['latin'],
@@ -36,6 +37,9 @@ export default function RootLayout({
 
         {/* Global Floating AI Copilot & Exam Quizzer */}
         <NexusAICopilot />
+
+        {/* Global Bug Reporter & Community Feedback Bounty */}
+        <BugReportModal />
       </body>
     </html>
   );
