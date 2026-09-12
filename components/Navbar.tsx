@@ -20,13 +20,15 @@ import {
   User,
   Search,
   Code2,
-  MapPin
+  MapPin,
+  Menu
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
 export default function Navbar() {
   const { credits, userName, userId } = useUserCredits();
   const supabase = createClient();
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Dark / Light Theme
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -180,8 +182,8 @@ export default function Navbar() {
             </div>
           </Link>
 
-          {/* SINGLE CLEAN NAVIGATION BAR */}
-          <nav className="flex items-center gap-1 bg-zinc-100 dark:bg-white/[0.03] p-1.5 rounded-2xl border border-zinc-200 dark:border-white/5 shadow-inner">
+          {/* DESKTOP NAVIGATION BAR (Hidden on Mobile/Tablet) */}
+          <nav className="hidden xl:flex items-center gap-1 bg-zinc-100 dark:bg-white/[0.03] p-1.5 rounded-2xl border border-zinc-200 dark:border-white/5 shadow-inner">
             <Link
               href="/doubts"
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-zinc-600 dark:text-zinc-300 hover:text-orange-600 dark:hover:text-white hover:bg-white dark:hover:bg-white/10 transition"
@@ -248,7 +250,7 @@ export default function Navbar() {
           </nav>
 
           {/* Right Controls */}
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             {/* Theme Toggle */}
             <button
               onClick={toggleTheme}
@@ -258,10 +260,10 @@ export default function Navbar() {
               {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-zinc-700" />}
             </button>
 
-            {/* Ambient Rain Audio */}
+            {/* Ambient Rain Audio (Hidden on smallest screens to save space) */}
             <button
               onClick={toggleFocusAudio}
-              className={`p-2 sm:px-3 sm:py-1.5 rounded-xl text-xs font-semibold border transition flex items-center gap-1.5 ${
+              className={`p-2 sm:px-3 sm:py-1.5 rounded-xl text-xs font-semibold border transition hidden sm:flex items-center gap-1.5 ${
                 isPlayingAudio
                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-600 dark:text-amber-300 animate-pulse'
                   : 'bg-zinc-100 dark:bg-white/[0.03] border-zinc-200 dark:border-white/5 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-white/10'
@@ -274,25 +276,19 @@ export default function Navbar() {
 
             {/* User Profile & Credits */}
             {userId ? (
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 <Link
                   href="/profile"
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-orange-500/10 border border-orange-500/30 text-orange-600 dark:text-amber-300 text-xs font-black shadow-sm hover:bg-orange-500/20 transition"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-orange-500/10 border border-orange-500/30 text-orange-600 dark:text-amber-300 text-xs font-black shadow-sm hover:bg-orange-500/20 transition"
                   title="View Profile & Analytics"
                 >
                   <Flame className="w-4 h-4 text-orange-500 dark:text-amber-400 animate-pulse" />
                   <span>{credits !== null ? `${credits} 🪙` : '100 🪙'}</span>
                 </Link>
-                <Link href="/profile" className="hidden sm:block text-right hover:opacity-80 transition">
-                  <p className="text-xs font-bold text-zinc-800 dark:text-zinc-200">{userName || 'LPU Student'}</p>
-                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center justify-end gap-1 font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Online
-                  </p>
-                </Link>
                 <button
                   onClick={() => supabase.auth.signOut().then(() => window.location.reload())}
                   title="Sign Out"
-                  className="p-2 rounded-xl bg-zinc-100 dark:bg-white/5 border border-zinc-200 dark:border-white/10 hover:text-red-500 text-zinc-500 transition"
+                  className="p-2 rounded-xl bg-zinc-100 dark:bg-white/5 border border-zinc-200 dark:border-white/10 hover:text-red-500 text-zinc-500 transition hidden sm:block"
                 >
                   <LogOut className="w-4 h-4" />
                 </button>
@@ -300,14 +296,117 @@ export default function Navbar() {
             ) : (
               <button
                 onClick={() => setIsAuthModalOpen(true)}
-                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 hover:opacity-95 text-white text-xs font-black shadow-lg shadow-orange-600/30 transition hover:scale-105"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 hover:opacity-95 text-white text-xs font-black shadow-lg shadow-orange-600/30 transition hover:scale-105"
               >
-                <LogIn className="w-4 h-4" />
-                Sign In
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Sign In</span>
               </button>
             )}
+
+            {/* Mobile / Tablet Hamburger Toggle */}
+            <button
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              className="xl:hidden p-2 rounded-xl bg-zinc-100 dark:bg-white/[0.04] border border-zinc-200 dark:border-white/10 text-zinc-700 dark:text-zinc-200 hover:text-orange-500 transition"
+              title="Open Navigation Menu"
+            >
+              {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
           </div>
         </div>
+
+        {/* MOBILE SLIDE-DOWN DRAWER MENU */}
+        {isMobileMenuOpen && (
+          <div className="xl:hidden border-b border-zinc-200 dark:border-white/10 bg-white/95 dark:bg-[#06070a]/95 backdrop-blur-2xl px-6 py-5 shadow-2xl space-y-4 animate-in slide-in-from-top-3 duration-200">
+            <div className="grid grid-cols-2 gap-2">
+              <Link
+                href="/doubts"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-zinc-100 dark:bg-white/[0.03] border border-zinc-200 dark:border-white/5 text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:border-orange-500/40"
+              >
+                <BookOpen className="w-4 h-4 text-orange-500" />
+                <span>Doubt Market</span>
+              </Link>
+
+              <Link
+                href="/rooms"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-zinc-100 dark:bg-white/[0.03] border border-zinc-200 dark:border-white/5 text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:border-amber-500/40"
+              >
+                <Video className="w-4 h-4 text-amber-500" />
+                <span>Group Rooms</span>
+              </Link>
+
+              <Link
+                href="/focus"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-zinc-100 dark:bg-white/[0.03] border border-zinc-200 dark:border-white/5 text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:border-orange-500/40"
+              >
+                <Brain className="w-3.5 h-3.5 text-orange-500" />
+                <span>Solo Focus</span>
+              </Link>
+
+              <Link
+                href="/dsa"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-zinc-100 dark:bg-white/[0.03] border border-zinc-200 dark:border-white/5 text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:border-emerald-500/40"
+              >
+                <Code2 className="w-4 h-4 text-emerald-500" />
+                <span>Daily DSA</span>
+              </Link>
+
+              <Link
+                href="/search"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-zinc-100 dark:bg-white/[0.03] border border-zinc-200 dark:border-white/5 text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:border-cyan-500/40"
+              >
+                <Search className="w-4 h-4 text-cyan-500" />
+                <span>CSE Search</span>
+              </Link>
+
+              <Link
+                href="/map"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-zinc-100 dark:bg-white/[0.03] border border-zinc-200 dark:border-white/5 text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:border-rose-500/40"
+              >
+                <MapPin className="w-4 h-4 text-rose-500" />
+                <span>Campus Map</span>
+              </Link>
+
+              <Link
+                href="/leaderboard"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-zinc-100 dark:bg-white/[0.03] border border-zinc-200 dark:border-white/5 text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:border-yellow-500/40"
+              >
+                <Trophy className="w-4 h-4 text-yellow-500" />
+                <span>Hall of Fame</span>
+              </Link>
+
+              <Link
+                href="/profile"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="flex items-center gap-2 p-3 rounded-2xl bg-zinc-100 dark:bg-white/[0.03] border border-zinc-200 dark:border-white/5 text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:border-purple-500/40"
+              >
+                <User className="w-4 h-4 text-purple-500" />
+                <span>My Profile</span>
+              </Link>
+            </div>
+
+            {/* Rain Audio on Mobile */}
+            <div className="pt-2 border-t border-zinc-100 dark:border-white/5 flex items-center justify-between">
+              <button
+                onClick={toggleFocusAudio}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold border ${
+                  isPlayingAudio
+                    ? 'bg-amber-500/20 border-amber-500/40 text-amber-500'
+                    : 'bg-zinc-100 dark:bg-white/5 border-zinc-200 dark:border-white/5 text-zinc-600 dark:text-zinc-300'
+                }`}
+              >
+                {isPlayingAudio ? <Volume2 className="w-4 h-4 text-amber-500" /> : <VolumeX className="w-4 h-4" />}
+                <span>{isPlayingAudio ? 'Lo-Fi Rain Active' : 'Toggle Lo-Fi Rain'}</span>
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* Auth Modal */}
