@@ -251,6 +251,16 @@ export default function Navbar() {
 
           {/* Right Controls */}
           <div className="flex items-center gap-2">
+            {/* Always Visible Pitch Deck (PPT) Button */}
+            <Link
+              href="/pitch"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 text-amber-600 dark:text-amber-400 text-xs font-black hover:scale-105 transition shadow-sm"
+              title="Open 10-Slide Hackathon Pitch Deck (PPT)"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+              <span>PPT Deck</span>
+            </Link>
+
             {/* Theme Toggle */}
             <button
               onClick={toggleTheme}

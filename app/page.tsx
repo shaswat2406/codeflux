@@ -65,10 +65,20 @@ export default function HomePage() {
       {/* 1. HERO SECTION */}
       <section className="max-w-7xl mx-auto px-6 pt-12 sm:pt-20 flex flex-col items-center text-center space-y-8">
         
-        {/* Top Floating Badge */}
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass-panel border border-orange-500/30 text-orange-600 dark:text-orange-400 text-xs font-black uppercase tracking-wider shadow-lg shadow-orange-500/10 animate-bounce">
-          <Sparkles className="w-4 h-4 text-amber-500 animate-spin" />
-          <span>Lovely Professional University • Campus Protocol</span>
+        {/* Top Floating Badge & Pitch Deck Callout */}
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass-panel border border-orange-500/30 text-orange-600 dark:text-orange-400 text-xs font-black uppercase tracking-wider shadow-lg shadow-orange-500/10">
+            <Sparkles className="w-4 h-4 text-amber-500 animate-spin" />
+            <span>Lovely Professional University • Campus Protocol</span>
+          </div>
+
+          <Link
+            href="/pitch"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-amber-500/20 via-orange-500/20 to-amber-500/20 border-2 border-amber-500/40 text-amber-600 dark:text-amber-300 text-xs font-black hover:scale-105 transition shadow-lg shadow-amber-500/20"
+          >
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            <span>📊 10-Slide Pitch Deck (PPT Mode) →</span>
+          </Link>
         </div>
 
         {/* Big Impact Hero Headline */}
@@ -86,12 +96,20 @@ export default function HomePage() {
         {/* Dynamic Action Buttons */}
         <div className="flex flex-wrap items-center justify-center gap-4 pt-2">
           <Link
+            href="/pitch"
+            className="flex items-center gap-2 px-8 py-4 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black text-sm shadow-xl shadow-amber-500/30 transition hover:scale-105"
+          >
+            <Sparkles className="w-4 h-4 text-slate-950 animate-pulse" />
+            <span>Launch Pitch Deck (PPT)</span>
+            <ArrowRight className="w-4 h-4" />
+          </Link>
+
+          <Link
             href="/doubts"
-            className="flex items-center gap-2.5 px-8 py-4 rounded-2xl bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white font-black text-sm shadow-xl shadow-orange-600/30 transition hover:scale-105"
+            className="flex items-center gap-2.5 px-7 py-4 rounded-2xl bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white font-black text-sm shadow-xl shadow-orange-600/30 transition hover:scale-105"
           >
             <BookOpen className="w-4 h-4" />
             <span>Explore Doubts</span>
-            <ArrowRight className="w-4 h-4" />
           </Link>
 
           <Link
