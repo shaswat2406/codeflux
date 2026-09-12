@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
@@ -25,7 +25,8 @@ import {
   Hand,
   PhoneOff,
   Send,
-  Trash2
+  Trash2,
+  Maximize2
 } from 'lucide-react';
 
 interface Participant {
@@ -51,6 +52,16 @@ interface RaisedHand {
   time: string;
 }
 
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+  ],
+};
+
 export default function VideoStudyRoomPage() {
   const params = useParams();
   const router = useRouter();
@@ -70,10 +81,15 @@ export default function VideoStudyRoomPage() {
   // Media Streams & Hardware Controls
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isVideoOn, setIsVideoOn] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  // WebRTC Peer Connections & Remote Streams Map
+  const peerConnections = useRef<{ [peerId: string]: RTCPeerConnection }>({});
+  const [remoteStreams, setRemoteStreams] = useState<{ [peerId: string]: MediaStream }>({});
 
   // Super Sidebar State: 'none' | 'chat' | 'whiteboard' | 'hands'
   const [activeSidebar, setActiveSidebar] = useState<'chat' | 'whiteboard' | 'hands' | 'none'>('chat');
@@ -95,24 +111,98 @@ export default function VideoStudyRoomPage() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [penColor, setPenColor] = useState('#f97316');
   const [penWidth, setPenWidth] = useState(3);
+  const lastPoint = useRef<{ x: number; y: number } | null>(null);
 
   // Raised Hands State
   const [raisedHands, setRaisedHands] = useState<RaisedHand[]>([]);
   const [myHandRaised, setMyHandRaised] = useState(false);
 
+  // Helper to create & wire WebRTC Peer Connection
+  const createPeerConnection = useCallback((peerId: string, currentId: string, channel: any) => {
+    if (peerConnections.current[peerId]) {
+      return peerConnections.current[peerId];
+    }
+
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    peerConnections.current[peerId] = pc;
+
+    // Add local tracks if available
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        try {
+          pc.addTrack(track, localStreamRef.current!);
+        } catch (e) {
+          console.warn('Track already added or failed', e);
+        }
+      });
+    }
+
+    // ICE Candidate handler
+    pc.onicecandidate = (event) => {
+      if (event.candidate && channel) {
+        channel.send({
+          type: 'broadcast',
+          event: 'webrtc_ice',
+          payload: {
+            senderId: currentId,
+            targetId: peerId,
+            candidate: event.candidate,
+          },
+        });
+      }
+    };
+
+    // Remote Track Handler (When incoming video/audio arrives from other device)
+    pc.ontrack = (event) => {
+      if (event.streams && event.streams[0]) {
+        const incomingStream = event.streams[0];
+        setRemoteStreams((prev) => ({
+          ...prev,
+          [peerId]: incomingStream,
+        }));
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        delete peerConnections.current[peerId];
+        setRemoteStreams((prev) => {
+          const updated = { ...prev };
+          delete updated[peerId];
+          return updated;
+        });
+      }
+    };
+
+    return pc;
+  }, []);
+
   // 1. Initialize Camera & Mic
   const startMedia = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
+        video: { width: { ideal: 640 }, height: { ideal: 480 } },
         audio: true,
       });
       setLocalStream(stream);
+      localStreamRef.current = stream;
       setIsVideoOn(true);
       setIsMicOn(true);
+
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
+
+      // Add newly acquired tracks to all existing peer connections
+      Object.values(peerConnections.current).forEach((pc) => {
+        stream.getTracks().forEach((track) => {
+          try {
+            pc.addTrack(track, stream);
+          } catch (e) {
+            console.warn('Track add error', e);
+          }
+        });
+      });
     } catch (err) {
       console.warn('Camera/Mic permission denied or not found:', err);
     }
@@ -121,13 +211,14 @@ export default function VideoStudyRoomPage() {
   useEffect(() => {
     startMedia();
     return () => {
-      if (localStream) {
-        localStream.getTracks().forEach((t) => t.stop());
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
+      Object.values(peerConnections.current).forEach((pc) => pc.close());
     };
   }, []);
 
-  // 2. Realtime Multi-User Presence & Broadcast Channel
+  // 2. Realtime Multi-User Presence & Broadcast Channel with WebRTC Signaling
   useEffect(() => {
     let activeChannel: any;
 
@@ -158,10 +249,11 @@ export default function VideoStudyRoomPage() {
         config: { presence: { key: currentId } },
       });
 
-      // Presence Sync
-      activeChannel.on('presence', { event: 'sync' }, () => {
+      // PRESENCE SYNC & Auto-Connect WebRTC Peers
+      activeChannel.on('presence', { event: 'sync' }, async () => {
         const state = activeChannel.presenceState();
         const list: Participant[] = [];
+
         for (const key in state) {
           const entry: any = state[key][0];
           if (entry) {
@@ -172,9 +264,82 @@ export default function VideoStudyRoomPage() {
               hasVideo: entry.hasVideo ?? true,
               hasAudio: entry.hasAudio ?? true,
             });
+
+            // If a peer is found and we haven't connected yet, the newer peer initiates offer
+            if (key !== currentId && !peerConnections.current[key]) {
+              const pc = createPeerConnection(key, currentId, activeChannel);
+
+              // If our currentId is lexicographically greater, initiate the offer to avoid collision
+              if (currentId > key) {
+                try {
+                  const offer = await pc.createOffer();
+                  await pc.setLocalDescription(offer);
+                  activeChannel.send({
+                    type: 'broadcast',
+                    event: 'webrtc_offer',
+                    payload: {
+                      senderId: currentId,
+                      targetId: key,
+                      sdp: offer,
+                    },
+                  });
+                } catch (err) {
+                  console.warn('Error creating WebRTC offer:', err);
+                }
+              }
+            }
           }
         }
         setParticipants(list);
+      });
+
+      // WEBRTC SIGNALING: Handle Incoming Offer
+      activeChannel.on('broadcast', { event: 'webrtc_offer' }, async ({ payload }: any) => {
+        if (payload.targetId !== currentId) return;
+        try {
+          const pc = createPeerConnection(payload.senderId, currentId, activeChannel);
+          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+
+          activeChannel.send({
+            type: 'broadcast',
+            event: 'webrtc_answer',
+            payload: {
+              senderId: currentId,
+              targetId: payload.senderId,
+              sdp: answer,
+            },
+          });
+        } catch (err) {
+          console.warn('Error handling WebRTC offer:', err);
+        }
+      });
+
+      // WEBRTC SIGNALING: Handle Incoming Answer
+      activeChannel.on('broadcast', { event: 'webrtc_answer' }, async ({ payload }: any) => {
+        if (payload.targetId !== currentId) return;
+        try {
+          const pc = peerConnections.current[payload.senderId];
+          if (pc && pc.signalingState !== 'stable') {
+            await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          }
+        } catch (err) {
+          console.warn('Error handling WebRTC answer:', err);
+        }
+      });
+
+      // WEBRTC SIGNALING: Handle ICE Candidate
+      activeChannel.on('broadcast', { event: 'webrtc_ice' }, async ({ payload }: any) => {
+        if (payload.targetId !== currentId) return;
+        try {
+          const pc = peerConnections.current[payload.senderId];
+          if (pc && payload.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+          }
+        } catch (err) {
+          console.warn('Error adding ICE candidate:', err);
+        }
       });
 
       // Chat Messages
@@ -223,19 +388,85 @@ export default function VideoStudyRoomPage() {
         supabase.removeChannel(activeChannel);
       }
     };
-  }, [roomId]);
+  }, [roomId, createPeerConnection]);
 
-  // Auto-scroll chat to bottom
-  useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, activeSidebar]);
+  // Whiteboard drawing helper
+  const drawOnCanvas = (x0: number, y0: number, x1: number, y1: number, color: string, width: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-  // Auto-Reward Credits on Timer Completion
-  useEffect(() => {
-    if (isCompleted && pomodoroState === 'FOCUS') {
-      claimReward();
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  };
+
+  // Toggle Mic Mute
+  const toggleMic = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = !isMicOn;
+      });
+      setIsMicOn(!isMicOn);
     }
-  }, [isCompleted, pomodoroState, claimReward]);
+  };
+
+  // Toggle Camera
+  const toggleCamera = async () => {
+    if (!localStreamRef.current) {
+      await startMedia();
+      return;
+    }
+
+    const videoTracks = localStreamRef.current.getVideoTracks();
+    if (videoTracks.length > 0) {
+      videoTracks.forEach((track) => {
+        track.enabled = !isVideoOn;
+      });
+      setIsVideoOn(!isVideoOn);
+    } else {
+      await startMedia();
+    }
+  };
+
+  // Toggle Screen Share
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      await startMedia();
+      setIsScreenSharing(false);
+    } else {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        setLocalStream(screenStream);
+        localStreamRef.current = screenStream;
+        setIsScreenSharing(true);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = screenStream;
+        }
+
+        // Replace video track on all peer connections
+        const screenTrack = screenStream.getVideoTracks()[0];
+        Object.values(peerConnections.current).forEach((pc) => {
+          const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(screenTrack);
+          }
+        });
+
+        screenTrack.onended = () => {
+          startMedia();
+          setIsScreenSharing(false);
+        };
+      } catch (err) {
+        console.warn('Screen share canceled or denied', err);
+      }
+    }
+  };
 
   // Chat Send Action
   const handleSendMessage = (e: React.FormEvent) => {
@@ -259,85 +490,52 @@ export default function VideoStudyRoomPage() {
     setNewMessage('');
   };
 
-  // Raise Hand Action
-  const handleToggleRaiseHand = () => {
-    if (!myHandRaised) {
-      const topic = prompt('What is your doubt or topic?', 'Quick help with tree traversal in C++') || 'General Academic Doubt';
-      const handPayload: RaisedHand = {
-        id: currentSessionId,
-        studentName: userName,
-        topic,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-      setRaisedHands((prev) => [handPayload, ...prev]);
-      setMyHandRaised(true);
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'hand_raise',
-        payload: handPayload,
-      });
-      setActiveSidebar('hands');
-    } else {
-      setRaisedHands((prev) => prev.filter((h) => h.id !== currentSessionId));
-      setMyHandRaised(false);
-      channelRef.current?.send({
-        type: 'broadcast',
-        event: 'hand_lower',
-        payload: { id: currentSessionId },
-      });
-    }
-  };
-
-  // Whiteboard Canvas Drawing Logic
-  const drawOnCanvas = (x0: number, y0: number, x1: number, y1: number, color: string, width: number) => {
+  // Whiteboard Canvas Handlers
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-  };
-
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvas.getBoundingClientRect();
+    lastPoint.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
     setIsDrawing(true);
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    canvas.setAttribute('data-last-x', String(e.clientX - rect.left));
-    canvas.setAttribute('data-last-y', String(e.clientY - rect.top));
   };
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawing || !lastPoint.current) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const x1 = e.clientX - rect.left;
-    const y1 = e.clientY - rect.top;
-    const x0 = Number(canvas.getAttribute('data-last-x') || x1);
-    const y0 = Number(canvas.getAttribute('data-last-y') || y1);
+    const currentPoint = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
 
-    drawOnCanvas(x0, y0, x1, y1, penColor, penWidth);
+    drawOnCanvas(lastPoint.current.x, lastPoint.current.y, currentPoint.x, currentPoint.y, penColor, penWidth);
 
     channelRef.current?.send({
       type: 'broadcast',
       event: 'wb_draw',
-      payload: { x0, y0, x1, y1, color: penColor, width: penWidth },
+      payload: {
+        x0: lastPoint.current.x,
+        y0: lastPoint.current.y,
+        x1: currentPoint.x,
+        y1: currentPoint.y,
+        color: penColor,
+        width: penWidth,
+      },
     });
 
-    canvas.setAttribute('data-last-x', String(x1));
-    canvas.setAttribute('data-last-y', String(y1));
+    lastPoint.current = currentPoint;
   };
 
-  const stopDrawing = () => setIsDrawing(false);
+  const handleMouseUp = () => {
+    setIsDrawing(false);
+    lastPoint.current = null;
+  };
 
-  const handleClearWhiteboard = () => {
+  const clearWhiteboard = () => {
     const canvas = canvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext('2d');
@@ -349,190 +547,217 @@ export default function VideoStudyRoomPage() {
     }
   };
 
-  const handleCopyLink = () => {
+  // Raise Hand
+  const toggleRaiseHand = () => {
+    if (myHandRaised) {
+      const myHand = raisedHands.find((h) => h.studentName === userName);
+      if (myHand) {
+        setRaisedHands((prev) => prev.filter((h) => h.id !== myHand.id));
+        channelRef.current?.send({
+          type: 'broadcast',
+          event: 'hand_lower',
+          payload: { id: myHand.id },
+        });
+      }
+      setMyHandRaised(false);
+    } else {
+      const newHand: RaisedHand = {
+        id: Math.random().toString(),
+        studentName: userName,
+        topic: 'Question regarding current sprint problem',
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setRaisedHands((prev) => [newHand, ...prev]);
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'hand_raise',
+        payload: newHand,
+      });
+      setMyHandRaised(true);
+    }
+  };
+
+  const copyRoomLink = () => {
     navigator.clipboard.writeText(window.location.href);
     setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2500);
+    setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const toggleMic = () => {
-    if (!localStream) {
-      startMedia();
-      return;
-    }
-    localStream.getAudioTracks().forEach((t) => (t.enabled = !isMicOn));
-    setIsMicOn(!isMicOn);
-  };
-
-  const toggleVideo = async () => {
-    if (!localStream) {
-      await startMedia();
-      return;
-    }
-    localStream.getVideoTracks().forEach((t) => (t.enabled = !isVideoOn));
-    setIsVideoOn(!isVideoOn);
-  };
-
-  const toggleScreenShare = async () => {
-    if (!isScreenSharing) {
-      try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        if (localVideoRef.current) localVideoRef.current.srcObject = screenStream;
-        screenStream.getVideoTracks()[0].onended = () => {
-          if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream;
-          setIsScreenSharing(false);
-        };
-        setIsScreenSharing(true);
-      } catch (err) {
-        console.error('Screen share error:', err);
-      }
-    } else {
-      if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream;
-      setIsScreenSharing(false);
-    }
-  };
+  const theme = getRoomTheme(roomId);
+  const themeWatermark = theme?.watermarkPattern;
 
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const courseCodeFormatted = roomId.split('-')[0]?.toUpperCase() || 'STUDY';
-  const theme = getRoomTheme(roomId);
-  const IconComp = theme.icon;
-
   return (
-    <div className={`h-[calc(100vh-4rem)] flex flex-col bg-gradient-to-b ${theme.bgGradient} text-white overflow-hidden relative`}>
-      {/* Dynamic Background SVG Watermark */}
-      <div
-        dangerouslySetInnerHTML={{ __html: theme.watermarkPattern }}
-        className="pointer-events-none opacity-20 absolute -right-10 -bottom-10 w-96 h-96"
-      />
+    <div className="h-[calc(100vh-4.5rem)] flex flex-col bg-[#04060a] text-white relative overflow-hidden select-none">
       
-      {/* Top HUD Bar */}
-      <div className="h-16 border-b border-white/10 bg-[#0b0d14]/85 backdrop-blur-2xl px-6 flex items-center justify-between shrink-0 z-20">
+      {/* Background Subject Watermark */}
+      {themeWatermark && (
+        <div
+          className="absolute inset-0 pointer-events-none z-0 overflow-hidden"
+          dangerouslySetInnerHTML={{ __html: themeWatermark }}
+        />
+      )}
+
+      {/* Top Header Bar */}
+      <div className="relative z-20 border-b border-white/10 bg-zinc-950/70 backdrop-blur-xl px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
         
-        {/* Left: Exit to Lobby & Room Info */}
-        <div className="flex items-center gap-4">
+        {/* Left: Room Badge & Back */}
+        <div className="flex items-center gap-3">
           <Link
             href="/rooms"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/[0.04] border border-white/10 hover:bg-white/10 text-zinc-300 text-xs font-bold transition"
-            title="Leave room and return to all rooms lobby"
+            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-400 hover:text-white transition"
           >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Exit to Lobby</span>
+            <ArrowLeft className="w-4 h-4" />
           </Link>
 
-          <div className="h-4 w-px bg-white/10 hidden sm:block" />
-
-          <div className="flex items-center gap-2.5">
-            <span className={`px-3 py-1 rounded-xl text-xs font-black border flex items-center gap-1.5 ${theme.badgeBg}`}>
-              <IconComp className="w-3.5 h-3.5" />
-              <span>{courseCodeFormatted}</span>
-            </span>
-            <div className="hidden md:block">
-              <h1 className="font-bold text-xs sm:text-sm text-zinc-100 flex items-center gap-1.5">
-                <span>{roomId}</span>
-                <span className="text-[10px] text-zinc-400 font-mono">({theme.badgeText.split(' ')[1] || 'Study'})</span>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-base font-black tracking-tight text-white uppercase font-mono">
+                #{roomId}
               </h1>
-              <p className="text-[10px] text-emerald-400 flex items-center gap-1 font-medium">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                {participants.length} Studiers Connected
-              </p>
+              {theme?.badgeText && (
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${theme.badgeBg}`}>
+                  {theme.badgeText}
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-zinc-400 font-mono flex items-center gap-2">
+              <span>{participants.length} Peer{participants.length === 1 ? '' : 's'} in Room</span>
+              <span>•</span>
+              <span className="text-emerald-400 flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                Live WebRTC Mesh Active
+              </span>
+            </p>
+          </div>
+        </div>
+
+        {/* Center: Synchronized Pomodoro Timer */}
+        <div className="flex items-center gap-3 bg-white/[0.03] border border-white/10 px-4 py-1.5 rounded-2xl shadow-inner">
+          <div className="text-center">
+            <div className="text-xl font-mono font-black text-amber-400 tracking-wider">
+              {formatTime(timeLeft)}
+            </div>
+            <div className="text-[9px] uppercase font-mono text-zinc-400 -mt-1 font-bold">
+              {pomodoroState === 'FOCUS' ? '⚡ Focus Sprint' : pomodoroState === 'BREAK' ? '☕ Rest Break' : 'Idle'}
             </div>
           </div>
-        </div>
 
-        {/* Center: Live Ticking Synchronized Pomodoro Clock with Quick Custom Durations */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          <div className="flex items-center gap-2 bg-white/[0.04] border border-white/10 px-3 sm:px-4 py-1.5 rounded-2xl shadow-inner">
-            <span className="text-[11px] sm:text-xs text-zinc-400 uppercase font-black tracking-wider">
-              {pomodoroState === 'FOCUS' ? '🧠 Focus:' : '☕ Break:'}
-            </span>
-            <span className="font-mono text-sm sm:text-base font-black text-amber-400">
-              {formatTime(timeLeft)}
-            </span>
-          </div>
-
-          {/* Quick Custom Sprint Presets */}
-          <div className="hidden lg:flex items-center gap-1 bg-white/[0.03] p-1 rounded-xl border border-white/10">
-            {[15, 25, 45, 60].map((mins) => (
+          <div className="flex items-center gap-1.5 pl-2 border-l border-white/10">
+            {pomodoroState !== 'FOCUS' && (
               <button
-                key={mins}
-                onClick={() => startFocusSprint(mins * 60)}
-                className="px-2 py-1 rounded-lg text-[10px] font-bold text-zinc-300 hover:text-white hover:bg-white/10 transition"
-                title={`Start ${mins}m Focus Sprint for Room`}
+                onClick={startFocusSprint}
+                className="p-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 transition"
+                title="Start 25m Focus Sprint"
               >
-                {mins}m
+                <Play className="w-3.5 h-3.5" />
               </button>
-            ))}
+            )}
+            {pomodoroState !== 'BREAK' && (
+              <button
+                onClick={startBreak}
+                className="p-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 transition"
+                title="Start 5m Break"
+              >
+                <Coffee className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
-
-          <button
-            onClick={() => {
-              const custom = prompt('Enter custom sprint minutes (e.g. 15, 30, 45, 50, 90):', '25');
-              if (custom && !isNaN(Number(custom)) && Number(custom) > 0) {
-                startFocusSprint(Number(custom) * 60);
-              }
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shadow-lg transition"
-            title="Start Custom Duration Focus Sprint"
-          >
-            <Play className="w-3.5 h-3.5" />
-            <span>Sync Sprint</span>
-          </button>
-
-          <button
-            onClick={() => startBreak(300)}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/10 text-zinc-300 text-xs font-bold border border-white/10 transition"
-            title="Take 5m Synchronized Break"
-          >
-            <Coffee className="w-3.5 h-3.5 text-amber-400" />
-            <span>5m Break</span>
-          </button>
         </div>
 
-        {/* Right: Invite Button & Hang Up */}
+        {/* Right: Media Controls & Actions */}
         <div className="flex items-center gap-2">
           <button
-            onClick={handleCopyLink}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold border transition ${
+            onClick={toggleMic}
+            className={`p-2.5 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 ${
+              isMicOn
+                ? 'bg-white/5 border-white/10 text-white hover:bg-white/10'
+                : 'bg-red-500/20 border-red-500/40 text-red-400'
+            }`}
+            title={isMicOn ? 'Mute Microphone' : 'Unmute Microphone'}
+          >
+            {isMicOn ? <Mic className="w-4 h-4 text-emerald-400" /> : <MicOff className="w-4 h-4" />}
+          </button>
+
+          <button
+            onClick={toggleCamera}
+            className={`p-2.5 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 ${
+              isVideoOn
+                ? 'bg-white/5 border-white/10 text-white hover:bg-white/10'
+                : 'bg-red-500/20 border-red-500/40 text-red-400'
+            }`}
+            title={isVideoOn ? 'Turn Off Camera' : 'Turn On Camera'}
+          >
+            {isVideoOn ? <VideoIcon className="w-4 h-4 text-emerald-400" /> : <VideoOff className="w-4 h-4" />}
+          </button>
+
+          <button
+            onClick={toggleScreenShare}
+            className={`p-2.5 rounded-xl border text-xs font-bold transition hidden sm:flex items-center gap-1.5 ${
+              isScreenSharing
+                ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                : 'bg-white/5 border-white/10 text-zinc-300 hover:bg-white/10'
+            }`}
+            title="Share Screen"
+          >
+            <ScreenShare className="w-4 h-4" />
+          </button>
+
+          <button
+            onClick={toggleRaiseHand}
+            className={`p-2.5 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 ${
+              myHandRaised
+                ? 'bg-amber-500 border-amber-400 text-slate-950 font-black animate-bounce'
+                : 'bg-white/5 border-white/10 text-zinc-300 hover:bg-white/10'
+            }`}
+            title="Raise Hand to Ask Doubt"
+          >
+            <Hand className="w-4 h-4" />
+          </button>
+
+          <button
+            onClick={copyRoomLink}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition ${
               copiedLink
                 ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
                 : 'bg-white/[0.04] border-white/10 text-zinc-200 hover:bg-white/10'
             }`}
           >
             {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copiedLink ? 'Link Copied!' : 'Invite Link'}</span>
+            <span className="hidden sm:inline">{copiedLink ? 'Copied!' : 'Invite'}</span>
           </button>
 
           <Link
             href="/rooms"
-            className="p-2 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 transition"
-            title="Leave Call"
+            className="p-2.5 rounded-xl bg-red-500/20 border border-red-500/40 text-red-400 hover:bg-red-500/30 transition"
+            title="Leave Room"
           >
             <PhoneOff className="w-4 h-4" />
           </Link>
         </div>
       </div>
 
-      {/* Main Body: Video Grid + Collapsible Super Sidebar */}
+      {/* Main Body: Video Tiles Grid + Super Sidebar */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* Left / Center Area: Video Tiles Grid */}
-        <div className="flex-1 p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 overflow-y-auto bg-[#06070a]">
+        {/* Left Area: Dynamic Video Grid */}
+        <div className="flex-1 p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 overflow-y-auto bg-[#04060a]">
           
-          {/* Local User Tile (You) */}
+          {/* Local User Tile (Your Camera / Screen) */}
           <div className="relative rounded-3xl bg-zinc-900/60 border border-white/10 overflow-hidden flex items-center justify-center min-h-[260px] shadow-2xl group">
             <video
               ref={localVideoRef}
               autoPlay
               muted
               playsInline
-              className={`w-full h-full object-cover ${!isVideoOn ? 'hidden' : ''}`}
+              className={`w-full h-full object-cover ${!isVideoOn && !isScreenSharing ? 'hidden' : ''}`}
             />
-            {!isVideoOn && (
+            {!isVideoOn && !isScreenSharing && (
               <div className="flex flex-col items-center gap-3">
                 <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-orange-600 to-amber-500 flex items-center justify-center font-black text-white text-2xl shadow-xl shadow-orange-600/30">
                   {userName.charAt(0)}
@@ -558,38 +783,58 @@ export default function VideoStudyRoomPage() {
             </div>
           </div>
 
-          {/* Remote Connected Peers */}
-          {participants.filter((p) => p.id !== currentSessionId).map((p) => (
-            <div
-              key={p.id}
-              className="relative rounded-3xl bg-zinc-900/40 border border-white/10 overflow-hidden flex items-center justify-center min-h-[260px] shadow-2xl animate-in fade-in zoom-in-95 duration-300"
-            >
-              <div className="flex flex-col items-center gap-3">
-                <img
-                  src={p.avatar}
-                  alt={p.name}
-                  className="w-20 h-20 rounded-full bg-zinc-800 border-2 border-orange-500/30 shadow-lg"
+          {/* Remote Connected Peers (Real WebRTC Live Camera Stream) */}
+          {participants.filter((p) => p.id !== currentSessionId).map((p) => {
+            const hasRemoteVideo = !!remoteStreams[p.id];
+
+            return (
+              <div
+                key={p.id}
+                className="relative rounded-3xl bg-zinc-900/40 border border-white/10 overflow-hidden flex items-center justify-center min-h-[260px] shadow-2xl animate-in fade-in zoom-in-95 duration-300"
+              >
+                {/* Live Remote Video Stream */}
+                <video
+                  ref={(el) => {
+                    if (el && remoteStreams[p.id]) {
+                      el.srcObject = remoteStreams[p.id];
+                    }
+                  }}
+                  autoPlay
+                  playsInline
+                  className={`w-full h-full object-cover ${!hasRemoteVideo ? 'hidden' : ''}`}
                 />
-                <div className="text-center">
-                  <p className="text-sm font-bold text-white">{p.name}</p>
-                  <p className="text-xs text-emerald-400 flex items-center justify-center gap-1.5 mt-0.5 font-medium">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    Studying on Call
-                  </p>
+
+                {/* Fallback Avatar when camera is connecting or off */}
+                {!hasRemoteVideo && (
+                  <div className="flex flex-col items-center gap-3">
+                    <img
+                      src={p.avatar}
+                      alt={p.name}
+                      className="w-20 h-20 rounded-full bg-zinc-800 border-2 border-orange-500/30 shadow-lg"
+                    />
+                    <div className="text-center">
+                      <p className="text-sm font-bold text-white">{p.name}</p>
+                      <p className="text-xs text-emerald-400 flex items-center justify-center gap-1.5 mt-0.5 font-medium">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Studying on Call
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="absolute bottom-3 left-3 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-bold border border-white/10 flex items-center gap-2">
+                  <span>{p.name}</span>
+                  {hasRemoteVideo && <span className="w-2 h-2 rounded-full bg-emerald-400" title="Live Video" />}
                 </div>
               </div>
-
-              <div className="absolute bottom-3 left-3 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-bold border border-white/10">
-                {p.name}
-              </div>
-            </div>
-          ))}
+            );
+          })}
 
         </div>
 
         {/* Right Super Sidebar */}
         {activeSidebar !== 'none' && (
-          <div className="w-80 sm:w-96 border-l border-white/10 bg-[#090b11] flex flex-col h-full shrink-0 animate-in slide-in-from-right duration-200">
+          <div className="w-80 sm:w-96 border-l border-white/10 bg-[#07090e] flex flex-col h-full shrink-0">
             
             {/* Sidebar Tab Selector */}
             <div className="p-3 border-b border-white/10 flex items-center justify-between gap-1 bg-white/[0.02]">
@@ -648,7 +893,7 @@ export default function VideoStudyRoomPage() {
                         <span className="font-bold text-zinc-300">{m.sender}</span>
                         <span>{m.time}</span>
                       </div>
-                      <div className="p-3 rounded-2xl bg-white/[0.04] border border-white/5 text-xs text-zinc-200 leading-relaxed break-words">
+                      <div className="p-3 rounded-2xl bg-zinc-900 border border-white/5 text-xs text-zinc-200 break-words">
                         {m.text}
                       </div>
                     </div>
@@ -656,18 +901,17 @@ export default function VideoStudyRoomPage() {
                   <div ref={chatBottomRef} />
                 </div>
 
-                {/* Chat Input */}
-                <form onSubmit={handleSendMessage} className="p-3 border-t border-white/10 bg-white/[0.01] flex gap-2">
+                <form onSubmit={handleSendMessage} className="p-3 border-t border-white/10 bg-zinc-950/60 flex items-center gap-2">
                   <input
                     type="text"
-                    placeholder="Type a message..."
+                    placeholder="Type study message..."
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
-                    className="flex-1 px-3.5 py-2.5 rounded-xl bg-white/[0.05] border border-white/10 text-white text-xs placeholder:text-zinc-500 focus:outline-none focus:border-orange-500"
+                    className="flex-1 px-4 py-2.5 rounded-xl bg-zinc-900 border border-white/10 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-orange-500"
                   />
                   <button
                     type="submit"
-                    className="p-2.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-white transition shrink-0"
+                    className="p-2.5 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 text-white hover:from-orange-500 transition shadow-md shadow-orange-600/20"
                   >
                     <Send className="w-4 h-4" />
                   </button>
@@ -675,92 +919,68 @@ export default function VideoStudyRoomPage() {
               </div>
             )}
 
-            {/* TAB 2: WHITEBOARD CANVAS */}
+            {/* TAB 2: COLLABORATIVE WHITEBOARD */}
             {activeSidebar === 'whiteboard' && (
-              <div className="flex-1 flex flex-col h-full overflow-hidden p-3 space-y-3">
-                <div className="flex items-center justify-between bg-white/[0.03] p-2 rounded-xl border border-white/5 text-xs">
+              <div className="flex-1 flex flex-col h-full overflow-hidden p-4 space-y-3">
+                <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
-                    {['#f97316', '#3b82f6', '#10b981', '#ec4899', '#ffffff'].map((color) => (
+                    {['#f97316', '#10b981', '#3b82f6', '#ec4899', '#ffffff'].map((c) => (
                       <button
-                        key={color}
-                        onClick={() => setPenColor(color)}
-                        className={`w-5 h-5 rounded-full border-2 transition ${
-                          penColor === color ? 'scale-125 border-white' : 'border-transparent opacity-70'
+                        key={c}
+                        onClick={() => setPenColor(c)}
+                        style={{ backgroundColor: c }}
+                        className={`w-6 h-6 rounded-full border-2 transition ${
+                          penColor === c ? 'scale-125 border-white' : 'border-transparent opacity-60'
                         }`}
-                        style={{ backgroundColor: color }}
                       />
                     ))}
                   </div>
-
                   <button
-                    onClick={handleClearWhiteboard}
-                    className="p-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 transition text-[11px] font-bold flex items-center gap-1"
-                    title="Clear Canvas"
+                    onClick={clearWhiteboard}
+                    className="p-2 rounded-xl bg-white/5 hover:bg-red-500/20 text-zinc-400 hover:text-red-400 text-xs font-bold border border-white/10 transition flex items-center gap-1"
                   >
-                    <Trash2 className="w-3.5 h-3.5" /> Clear
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Clear
                   </button>
                 </div>
 
-                <div className="flex-1 rounded-2xl bg-zinc-950 border border-white/10 overflow-hidden relative cursor-crosshair">
+                <div className="flex-1 rounded-2xl bg-zinc-950 border border-white/10 overflow-hidden relative">
                   <canvas
                     ref={canvasRef}
-                    width={350}
-                    height={480}
-                    onMouseDown={startDrawing}
-                    onMouseMove={draw}
-                    onMouseUp={stopDrawing}
-                    onMouseLeave={stopDrawing}
-                    className="w-full h-full"
+                    width={340}
+                    height={460}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    className="w-full h-full cursor-crosshair touch-none"
                   />
                 </div>
-                <p className="text-[10px] text-zinc-500 text-center font-mono">
-                  Live shared canvas • Sketch trees & algorithms
-                </p>
               </div>
             )}
 
-            {/* TAB 3: RAISED HANDS */}
+            {/* TAB 3: RAISED HANDS QUEUE */}
             {activeSidebar === 'hands' && (
-              <div className="flex-1 p-4 overflow-y-auto space-y-4">
-                <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-black uppercase flex items-center gap-1.5">
-                      <Hand className="w-4 h-4 text-amber-400" />
-                      In-Room Micro-Bounties
-                    </span>
-                    <span className="text-xs font-mono font-bold">+10 🪙</span>
+              <div className="flex-1 p-4 overflow-y-auto space-y-3">
+                {raisedHands.length === 0 && (
+                  <div className="text-center py-12 text-zinc-500 text-xs space-y-1">
+                    <Hand className="w-8 h-8 text-zinc-700 mx-auto" />
+                    <p className="font-semibold text-zinc-400">No Raised Hands</p>
+                    <p>Click the Hand icon in the header to ask a doubt politely without interrupting.</p>
                   </div>
-                  <p className="text-[11px] text-zinc-400">
-                    Stuck on code during focus? Raise hand to broadcast a quick question to studiers on call.
-                  </p>
-                </div>
+                )}
 
-                <div className="space-y-2.5">
-                  <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">
-                    Active Raised Hands ({raisedHands.length})
-                  </h3>
-
-                  {raisedHands.length === 0 && (
-                    <p className="text-xs text-zinc-500 text-center py-8">
-                      No hands raised right now. Everyone is locked into focus!
-                    </p>
-                  )}
-
-                  {raisedHands.map((h) => (
-                    <div
-                      key={h.id}
-                      className="p-3.5 rounded-2xl bg-white/[0.04] border border-white/10 space-y-2"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-white flex items-center gap-1">
-                          ✋ {h.studentName}
-                        </span>
-                        <span className="text-[10px] text-zinc-500">{h.time}</span>
-                      </div>
-                      <p className="text-xs text-zinc-300 font-medium">"{h.topic}"</p>
+                {raisedHands.map((h) => (
+                  <div key={h.id} className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs space-y-1">
+                    <div className="flex items-center justify-between text-amber-400 font-bold">
+                      <span className="flex items-center gap-1.5">
+                        <Hand className="w-3.5 h-3.5 animate-bounce" />
+                        {h.studentName}
+                      </span>
+                      <span className="text-[10px] text-zinc-400">{h.time}</span>
                     </div>
-                  ))}
-                </div>
+                    <p className="text-zinc-200 text-[11px]">{h.topic}</p>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -768,100 +988,6 @@ export default function VideoStudyRoomPage() {
         )}
 
       </div>
-
-      {/* Floating Bottom Media Bar with Sidebar Action Buttons */}
-      <div className="h-20 border-t border-white/5 bg-[#0b0d14]/90 backdrop-blur-2xl px-6 flex items-center justify-between shrink-0">
-        
-        {/* Left Status */}
-        <div className="flex items-center gap-2 text-xs text-zinc-400 font-semibold bg-white/[0.03] px-3.5 py-2 rounded-xl border border-white/5">
-          <Users className="w-4 h-4 text-orange-400" />
-          <span>{Math.max(1, participants.length)} Connected</span>
-        </div>
-
-        {/* Center Hardware Toggles */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={toggleMic}
-            className={`p-4 rounded-2xl transition border ${
-              isMicOn
-                ? 'bg-white/[0.05] hover:bg-white/10 text-white border-white/10'
-                : 'bg-red-500/20 text-red-400 border-red-500/40'
-            }`}
-            title={isMicOn ? 'Mute Mic' : 'Unmute Mic'}
-          >
-            {isMicOn ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5 text-red-400" />}
-          </button>
-
-          <button
-            onClick={toggleVideo}
-            className={`p-4 rounded-2xl transition border ${
-              isVideoOn
-                ? 'bg-white/[0.05] hover:bg-white/10 text-white border-white/10'
-                : 'bg-red-500/20 text-red-400 border-red-500/40'
-            }`}
-            title={isVideoOn ? 'Turn Off Video' : 'Turn On Video'}
-          >
-            {isVideoOn ? <VideoIcon className="w-5 h-5" /> : <VideoOff className="w-5 h-5 text-red-400" />}
-          </button>
-
-          <button
-            onClick={toggleScreenShare}
-            className={`p-4 rounded-2xl transition border ${
-              isScreenSharing
-                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-                : 'bg-white/[0.05] hover:bg-white/10 text-white border-white/10'
-            }`}
-            title="Share Screen"
-          >
-            <ScreenShare className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Right Super Sidebar Toggles */}
-        <div className="flex items-center gap-2">
-          {/* Raise Hand Button */}
-          <button
-            onClick={handleToggleRaiseHand}
-            className={`p-3 rounded-xl border font-bold text-xs flex items-center gap-1.5 transition ${
-              myHandRaised
-                ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 animate-bounce'
-                : 'bg-white/[0.04] border-white/10 text-zinc-300 hover:bg-white/10'
-            }`}
-            title="Raise Hand for Help"
-          >
-            <Hand className="w-4 h-4 text-amber-400" />
-            <span className="hidden sm:inline">{myHandRaised ? 'Hand Raised' : 'Raise Hand'}</span>
-          </button>
-
-          {/* Whiteboard Toggle */}
-          <button
-            onClick={() => setActiveSidebar(activeSidebar === 'whiteboard' ? 'none' : 'whiteboard')}
-            className={`p-3 rounded-xl border transition ${
-              activeSidebar === 'whiteboard'
-                ? 'bg-orange-600 text-white border-orange-500'
-                : 'bg-white/[0.04] border-white/10 text-zinc-400 hover:text-white'
-            }`}
-            title="Toggle Whiteboard"
-          >
-            <PenTool className="w-4 h-4" />
-          </button>
-
-          {/* Chat Toggle */}
-          <button
-            onClick={() => setActiveSidebar(activeSidebar === 'chat' ? 'none' : 'chat')}
-            className={`p-3 rounded-xl border transition ${
-              activeSidebar === 'chat'
-                ? 'bg-orange-600 text-white border-orange-500'
-                : 'bg-white/[0.04] border-white/10 text-zinc-400 hover:text-white'
-            }`}
-            title="Toggle Room Chat"
-          >
-            <MessageSquare className="w-4 h-4" />
-          </button>
-        </div>
-
-      </div>
-
     </div>
   );
 }
