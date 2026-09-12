@@ -26,7 +26,9 @@ import {
   PhoneOff,
   Send,
   Trash2,
-  Maximize2
+  Maximize2,
+  Pin,
+  PinOff
 } from 'lucide-react';
 
 interface Participant {
@@ -67,10 +69,16 @@ function RemotePeerCard({
   participant,
   stream,
   fallbackFrame,
+  isPinned,
+  onTogglePin,
+  compact = false,
 }: {
   participant: Participant;
   stream?: MediaStream;
   fallbackFrame?: string;
+  isPinned?: boolean;
+  onTogglePin?: () => void;
+  compact?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -91,7 +99,11 @@ function RemotePeerCard({
   const showFallback = !showVideo && fallbackFrame;
 
   return (
-    <div className="relative rounded-3xl bg-zinc-900/60 border border-white/10 overflow-hidden flex items-center justify-center min-h-[260px] shadow-2xl animate-in fade-in zoom-in-95 duration-300">
+    <div
+      className={`relative rounded-3xl bg-zinc-900/60 border overflow-hidden flex items-center justify-center shadow-2xl transition-all ${
+        isPinned ? 'border-amber-500/80 shadow-amber-500/10' : 'border-white/10'
+      } ${compact ? 'h-44 min-w-[200px]' : 'min-h-[260px] w-full'}`}
+    >
       {/* 1. Live WebRTC Video Stream */}
       <video
         ref={videoRef}
@@ -112,25 +124,47 @@ function RemotePeerCard({
 
       {/* 3. Bot Avatar when camera is off */}
       {!showVideo && !showFallback && (
-        <div className="flex flex-col items-center gap-3">
+        <div className="flex flex-col items-center gap-3 p-4">
           <img
             src={participant.avatar}
             alt={participant.name}
-            className="w-20 h-20 rounded-full bg-zinc-800 border-2 border-orange-500/30 shadow-lg"
+            className={`rounded-full bg-zinc-800 border-2 border-orange-500/30 shadow-lg ${
+              compact ? 'w-12 h-12' : 'w-20 h-20'
+            }`}
           />
           <div className="text-center">
-            <p className="text-sm font-bold text-white">{participant.name}</p>
-            <p className="text-xs text-emerald-400 flex items-center justify-center gap-1.5 mt-0.5 font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Connected & Studying
+            <p className={`font-bold text-white ${compact ? 'text-xs truncate max-w-[140px]' : 'text-sm'}`}>
+              {participant.name}
             </p>
+            {!compact && (
+              <p className="text-xs text-emerald-400 flex items-center justify-center gap-1.5 mt-0.5 font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Connected & Studying
+              </p>
+            )}
           </div>
         </div>
       )}
 
+      {/* Pin Control Button */}
+      {onTogglePin && (
+        <button
+          onClick={onTogglePin}
+          className={`absolute top-3 left-3 p-2 rounded-xl backdrop-blur-md text-xs font-bold border transition flex items-center gap-1.5 shadow-md ${
+            isPinned
+              ? 'bg-amber-500 text-slate-950 border-amber-400'
+              : 'bg-black/60 text-zinc-300 border-white/10 hover:bg-amber-500 hover:text-slate-950 hover:border-amber-400'
+          }`}
+          title={isPinned ? 'Unpin from Main Stage' : 'Pin to Main Stage'}
+        >
+          {isPinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+          <span className="hidden sm:inline text-[10px]">{isPinned ? 'Unpin' : 'Pin'}</span>
+        </button>
+      )}
+
       {/* Participant Name Tag */}
-      <div className="absolute bottom-3 left-3 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-bold border border-white/10 flex items-center gap-2">
-        <span>{participant.name}</span>
+      <div className="absolute bottom-3 left-3 bg-black/70 backdrop-blur-md px-3 py-1 rounded-xl text-xs font-bold border border-white/10 flex items-center gap-1.5">
+        <span className="truncate max-w-[120px]">{participant.name}</span>
         {(showVideo || showFallback) && (
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Live Video Active" />
         )}
@@ -164,6 +198,9 @@ export default function VideoStudyRoomPage() {
   const [isVideoOn, setIsVideoOn] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  // Pin / Spotlight Stage State ('local' | peerId | null)
+  const [pinnedPeerId, setPinnedPeerId] = useState<string | null>(null);
 
   // WebRTC Peer Connections & Remote Streams Map
   const peerConnections = useRef<{ [peerId: string]: RTCPeerConnection }>({});
@@ -294,7 +331,7 @@ export default function VideoStudyRoomPage() {
     };
   }, []);
 
-  // 2. High-Speed Frame Streamer (Fallback if WebRTC STUN is blocked by symmetric mobile carrier NAT)
+  // 2. High-Speed Frame Streamer
   useEffect(() => {
     if (!isVideoOn) return;
 
@@ -325,7 +362,7 @@ export default function VideoStudyRoomPage() {
           });
         }
       }
-    }, 200); // 5 frames per second lightweight frame broadcast
+    }, 200);
 
     return () => clearInterval(interval);
   }, [isVideoOn, currentSessionId]);
@@ -377,7 +414,6 @@ export default function VideoStudyRoomPage() {
               hasAudio: entry.hasAudio ?? true,
             });
 
-            // Connect WebRTC peer
             if (key !== currentId && !peerConnections.current[key]) {
               const pc = createPeerConnection(key, currentId, activeChannel);
 
@@ -404,7 +440,7 @@ export default function VideoStudyRoomPage() {
         setParticipants(list);
       });
 
-      // WEBRTC SIGNALING: Offer
+      // WEBRTC SIGNALING
       activeChannel.on('broadcast', { event: 'webrtc_offer' }, async ({ payload }: any) => {
         if (payload.targetId !== currentId) return;
         try {
@@ -427,7 +463,6 @@ export default function VideoStudyRoomPage() {
         }
       });
 
-      // WEBRTC SIGNALING: Answer
       activeChannel.on('broadcast', { event: 'webrtc_answer' }, async ({ payload }: any) => {
         if (payload.targetId !== currentId) return;
         try {
@@ -440,7 +475,6 @@ export default function VideoStudyRoomPage() {
         }
       });
 
-      // WEBRTC SIGNALING: ICE Candidate
       activeChannel.on('broadcast', { event: 'webrtc_ice' }, async ({ payload }: any) => {
         if (payload.targetId !== currentId) return;
         try {
@@ -453,7 +487,7 @@ export default function VideoStudyRoomPage() {
         }
       });
 
-      // INCOMING FALLBACK VIDEO FRAME (Guarantees camera visibility across all mobile networks)
+      // INCOMING FALLBACK VIDEO FRAME
       activeChannel.on('broadcast', { event: 'video_frame' }, ({ payload }: any) => {
         if (payload.senderId && payload.senderId !== currentId && payload.frame) {
           setRemoteFrames((prev) => ({
@@ -712,6 +746,11 @@ export default function VideoStudyRoomPage() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Pinned Participant computation
+  const otherParticipants = participants.filter((p) => p.id !== currentSessionId);
+  const pinnedRemoteParticipant = otherParticipants.find((p) => p.id === pinnedPeerId);
+  const isLocalPinned = pinnedPeerId === 'local';
+
   return (
     <div className="h-[calc(100vh-4.5rem)] flex flex-col bg-[#04060a] text-white relative overflow-hidden select-none">
       
@@ -753,6 +792,14 @@ export default function VideoStudyRoomPage() {
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                 Live Video & Sprints
               </span>
+              {pinnedPeerId && (
+                <>
+                  <span>•</span>
+                  <span className="text-amber-400 font-bold flex items-center gap-1">
+                    <Pin className="w-3 h-3" /> Spotlight Pinned
+                  </span>
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -865,53 +912,156 @@ export default function VideoStudyRoomPage() {
       {/* Main Body: Video Tiles Grid + Super Sidebar */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* Left Area: Dynamic Video Grid */}
-        <div className="flex-1 p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 overflow-y-auto bg-[#04060a]">
+        {/* Left Area: Dynamic Video Grid or Spotlight Pinned View */}
+        <div className="flex-1 p-4 sm:p-6 overflow-y-auto bg-[#04060a] flex flex-col justify-between">
           
-          {/* Local User Tile (Your Camera / Screen) */}
-          <div className="relative rounded-3xl bg-zinc-900/60 border border-white/10 overflow-hidden flex items-center justify-center min-h-[260px] shadow-2xl group">
-            <video
-              ref={localVideoRef}
-              autoPlay
-              muted
-              playsInline
-              className={`w-full h-full object-cover ${!isVideoOn && !isScreenSharing ? 'hidden' : ''}`}
-            />
-            {!isVideoOn && !isScreenSharing && (
-              <div className="flex flex-col items-center gap-3">
-                <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-orange-600 to-amber-500 flex items-center justify-center font-black text-white text-2xl shadow-xl shadow-orange-600/30">
-                  {userName.charAt(0)}
+          {/* SCENARIO A: SPOTLIGHT THEATER VIEW (WHEN A VIDEO IS PINNED) */}
+          {pinnedPeerId ? (
+            <div className="flex-1 flex flex-col space-y-4">
+              
+              {/* Main Expanded Spotlight Stage */}
+              <div className="flex-1 min-h-[380px] sm:min-h-[460px] relative rounded-3xl bg-zinc-900/60 border-2 border-amber-500/60 overflow-hidden flex items-center justify-center shadow-2xl">
+                
+                {/* Case 1: Local User is Pinned */}
+                {isLocalPinned ? (
+                  <>
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      muted
+                      playsInline
+                      className={`w-full h-full object-cover ${!isVideoOn && !isScreenSharing ? 'hidden' : ''}`}
+                    />
+                    {!isVideoOn && !isScreenSharing && (
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-orange-600 to-amber-500 flex items-center justify-center font-black text-white text-3xl shadow-2xl">
+                          {userName.charAt(0)}
+                        </div>
+                        <p className="text-base font-bold text-white">{userName} (You)</p>
+                      </div>
+                    )}
+                  </>
+                ) : pinnedRemoteParticipant ? (
+                  /* Case 2: Remote Peer is Pinned */
+                  <RemotePeerCard
+                    participant={pinnedRemoteParticipant}
+                    stream={remoteStreams[pinnedRemoteParticipant.id]}
+                    fallbackFrame={remoteFrames[pinnedRemoteParticipant.id]}
+                    isPinned={true}
+                    onTogglePin={() => setPinnedPeerId(null)}
+                  />
+                ) : null}
+
+                {/* Top Spotlight Indicator & Unpin Trigger */}
+                <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
+                  <button
+                    onClick={() => setPinnedPeerId(null)}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-black shadow-lg flex items-center gap-1.5 hover:bg-amber-400 transition"
+                  >
+                    <PinOff className="w-3.5 h-3.5" />
+                    <span>Unpin Video (Return to Grid)</span>
+                  </button>
                 </div>
-                <button
-                  onClick={startMedia}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-bold border border-white/10 transition"
-                >
-                  <Camera className="w-3.5 h-3.5 text-orange-400" />
-                  Turn On Camera
-                </button>
               </div>
-            )}
 
-            <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-bold border border-white/10">
-              <span>{userName} (You)</span>
-              {!isMicOn && <MicOff className="w-3.5 h-3.5 text-red-400" />}
+              {/* Bottom Thumbnail Strip for remaining participants */}
+              <div className="flex items-center gap-3 overflow-x-auto pb-2 pt-1">
+                {/* Local User Thumbnail (if not pinned) */}
+                {!isLocalPinned && (
+                  <div
+                    onClick={() => setPinnedPeerId('local')}
+                    className="cursor-pointer relative rounded-2xl bg-zinc-900/80 border border-white/10 hover:border-amber-500/60 overflow-hidden flex items-center justify-center h-28 w-44 shrink-0 transition"
+                  >
+                    <div className="text-center p-2">
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-orange-600 to-amber-500 flex items-center justify-center font-bold text-white text-xs mx-auto mb-1">
+                        {userName.charAt(0)}
+                      </div>
+                      <p className="text-[11px] font-bold text-white truncate max-w-[120px]">{userName} (You)</p>
+                      <span className="text-[9px] text-amber-400">Click to Pin</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Remote Peer Thumbnails */}
+                {otherParticipants.filter((p) => p.id !== pinnedPeerId).map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => setPinnedPeerId(p.id)}
+                    className="cursor-pointer relative rounded-2xl bg-zinc-900/80 border border-white/10 hover:border-amber-500/60 overflow-hidden flex items-center justify-center h-28 w-44 shrink-0 transition"
+                  >
+                    <div className="text-center p-2">
+                      <img src={p.avatar} alt={p.name} className="w-8 h-8 rounded-full bg-zinc-800 mx-auto mb-1 border border-orange-500/30" />
+                      <p className="text-[11px] font-bold text-white truncate max-w-[120px]">{p.name}</p>
+                      <span className="text-[9px] text-amber-400">Click to Pin</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
             </div>
+          ) : (
+            /* SCENARIO B: BALANCED MULTI-USER GRID VIEW */
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              
+              {/* Local User Tile (Your Camera / Screen) */}
+              <div className="relative rounded-3xl bg-zinc-900/60 border border-white/10 overflow-hidden flex items-center justify-center min-h-[260px] shadow-2xl group">
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className={`w-full h-full object-cover ${!isVideoOn && !isScreenSharing ? 'hidden' : ''}`}
+                />
+                {!isVideoOn && !isScreenSharing && (
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-orange-600 to-amber-500 flex items-center justify-center font-black text-white text-2xl shadow-xl shadow-orange-600/30">
+                      {userName.charAt(0)}
+                    </div>
+                    <button
+                      onClick={startMedia}
+                      className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-bold border border-white/10 transition"
+                    >
+                      <Camera className="w-3.5 h-3.5 text-orange-400" />
+                      Turn On Camera
+                    </button>
+                  </div>
+                )}
 
-            <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-gradient-to-r from-amber-500/20 to-orange-500/20 backdrop-blur-md text-amber-300 text-[11px] font-black px-3 py-1 rounded-full border border-amber-500/40">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              +5 🪙 on sprint
+                {/* Local Pin Button */}
+                <button
+                  onClick={() => setPinnedPeerId('local')}
+                  className="absolute top-3 left-3 p-2 rounded-xl bg-black/60 hover:bg-amber-500 hover:text-slate-950 border border-white/10 text-zinc-300 transition text-xs font-bold flex items-center gap-1 shadow-md"
+                  title="Pin Your Video to Main Stage"
+                >
+                  <Pin className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline text-[10px]">Pin</span>
+                </button>
+
+                <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-black/70 backdrop-blur-md px-3.5 py-1.5 rounded-xl text-xs font-bold border border-white/10">
+                  <span>{userName} (You)</span>
+                  {!isMicOn && <MicOff className="w-3.5 h-3.5 text-red-400" />}
+                </div>
+
+                <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-gradient-to-r from-amber-500/20 to-orange-500/20 backdrop-blur-md text-amber-300 text-[11px] font-black px-3 py-1 rounded-full border border-amber-500/40">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  +5 🪙 on sprint
+                </div>
+              </div>
+
+              {/* Remote Connected Peers */}
+              {otherParticipants.map((p) => (
+                <RemotePeerCard
+                  key={p.id}
+                  participant={p}
+                  stream={remoteStreams[p.id]}
+                  fallbackFrame={remoteFrames[p.id]}
+                  isPinned={false}
+                  onTogglePin={() => setPinnedPeerId(p.id)}
+                />
+              ))}
+
             </div>
-          </div>
-
-          {/* Remote Connected Peers (Real Live Video Feed with Fallback) */}
-          {participants.filter((p) => p.id !== currentSessionId).map((p) => (
-            <RemotePeerCard
-              key={p.id}
-              participant={p}
-              stream={remoteStreams[p.id]}
-              fallbackFrame={remoteFrames[p.id]}
-            />
-          ))}
+          )}
 
         </div>
 
